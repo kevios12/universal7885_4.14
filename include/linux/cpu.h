@@ -89,6 +89,9 @@ struct notifier_block;
 #define CPU_DOWN_FAILED_FROZEN	(CPU_DOWN_FAILED | CPU_TASKS_FROZEN)
 #define CPU_DEAD_FROZEN		(CPU_DEAD | CPU_TASKS_FROZEN)
 
+#define CPUS_UP_PREPARE                 0x0001
+#define CPUS_DOWN_COMPLETE              0x0002
+
 #ifdef CONFIG_SMP
 extern bool cpuhp_tasks_frozen;
 int cpu_up(unsigned int cpu);
@@ -115,7 +118,7 @@ extern void cpus_write_lock(void);
 extern void cpus_write_unlock(void);
 extern void cpus_read_lock(void);
 extern void cpus_read_unlock(void);
-static inline void lockdep_assert_cpus_held(void) { }
+extern void lockdep_assert_cpus_held(void);
 extern void cpu_hotplug_disable(void);
 extern void cpu_hotplug_enable(void);
 void clear_tasks_mm_cpumask(int cpu);

@@ -93,6 +93,7 @@ static int __init exynos_ion_reserved_mem_setup(struct reserved_mem *rmem)
 		ion_reserved_mem[reserved_mem_count].cma = cma;
 
 		kmemleak_ignore_phys(rmem->base);
+		rmem->reusable = true;
 	}
 
 	ion_reserved_mem[reserved_mem_count].base = rmem->base;

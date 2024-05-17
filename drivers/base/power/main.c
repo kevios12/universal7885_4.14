@@ -830,10 +830,7 @@ static int device_resume(struct device *dev, pm_message_t state, bool async)
 
 	if (dev->power.direct_complete) {
 		/* Match the pm_runtime_disable() in __device_suspend(). */
-		if (!dev->power.is_suspend_aborted)
-			pm_runtime_enable(dev);
-		else
-			dev->power.is_suspend_aborted = false;
+		pm_runtime_enable(dev);
 		goto Complete;
 	}
 
@@ -1175,6 +1172,10 @@ static void async_suspend_noirq(void *data, async_cookie_t cookie)
 	if (error) {
 		dpm_save_failed_dev(dev_name(dev));
 		pm_dev_err(dev, pm_transition, " async", error);
+#ifdef CONFIG_SEC_PM_DEBUG
+		log_suspend_abort_reason("Device %s failed to suspend async: %d",
+				dev_name(dev), error);
+#endif /* CONFIG_SEC_PM_DEBUG */
 	}
 
 	put_device(dev);
@@ -1513,8 +1514,6 @@ static int __device_suspend(struct device *dev, pm_message_t state, bool async)
 		log_suspend_abort_reason(suspend_abort);
 		dev->power.direct_complete = false;
 		async_error = -EBUSY;
-		if (dev->power.direct_complete)
-			dev->power.is_suspend_aborted = true;
 		goto Complete;
 	}
 
@@ -1667,6 +1666,10 @@ int dpm_suspend(pm_message_t state)
 		if (error) {
 			pm_dev_err(dev, state, "", error);
 			dpm_save_failed_dev(dev_name(dev));
+#ifdef CONFIG_SEC_PM_DEBUG
+			log_suspend_abort_reason("Device %s failed to suspend: %d",
+					dev_name(dev), error);
+#endif /* CONFIG_SEC_PM_DEBUG */
 			put_device(dev);
 			break;
 		}
@@ -1811,6 +1814,10 @@ int dpm_prepare(pm_message_t state)
 			printk(KERN_INFO "PM: Device %s not prepared "
 				"for power transition: code %d\n",
 				dev_name(dev), error);
+#ifdef CONFIG_SEC_PM_DEBUG
+			log_suspend_abort_reason("Device %s not prepared: %d",
+					dev_name(dev), error);
+#endif /* CONFIG_SEC_PM_DEBUG */
 			put_device(dev);
 			break;
 		}

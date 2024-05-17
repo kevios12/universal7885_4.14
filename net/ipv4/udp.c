@@ -1299,8 +1299,15 @@ int __udp_enqueue_schedule_skb(struct sock *sk, struct sk_buff *skb)
 	 * queue is full; always allow at least a packet
 	 */
 	rmem = atomic_read(&sk->sk_rmem_alloc);
-	if (rmem > sk->sk_rcvbuf)
-		goto drop;
+	if (rmem > sk->sk_rcvbuf) {
+		if (sk->sk_rcvbuf < sysctl_rmem_max) {
+			/* increase sk_rcvbuf twice */
+			sk->sk_rcvbuf = min(sk->sk_rcvbuf * 2, (int)sysctl_rmem_max);
+		}
+
+		if (rmem > sk->sk_rcvbuf)
+			goto drop;
+	}
 
 	/* Under mem pressure, it might be helpful to help udp_recvmsg()
 	 * having linear skbs :

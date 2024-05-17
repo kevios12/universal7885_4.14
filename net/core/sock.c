@@ -443,9 +443,15 @@ int __sock_queue_rcv_skb(struct sock *sk, struct sk_buff *skb)
 	struct sk_buff_head *list = &sk->sk_receive_queue;
 
 	if (atomic_read(&sk->sk_rmem_alloc) >= sk->sk_rcvbuf) {
-		atomic_inc(&sk->sk_drops);
-		trace_sock_rcvqueue_full(sk, skb);
-		return -ENOMEM;
+		if (sk->sk_rcvbuf < sysctl_rmem_max) {
+			/* increase sk_rcvbuf twice */
+			sk->sk_rcvbuf = min(sk->sk_rcvbuf * 2, (int)sysctl_rmem_max);
+		}
+		if (atomic_read(&sk->sk_rmem_alloc) >= sk->sk_rcvbuf) {
+			atomic_inc(&sk->sk_drops);
+			trace_sock_rcvqueue_full(sk, skb);
+			return -ENOMEM;
+		}
 	}
 
 	if (!sk_rmem_schedule(sk, skb, skb->truesize)) {

@@ -28,13 +28,14 @@
 #include <linux/security.h>
 #include <linux/syscalls.h>
 #include <linux/debug-snapshot.h>
-#include <linux/ems.h>
 
 #include <asm/switch_to.h>
 #include <asm/tlb.h>
 #ifdef CONFIG_PARAVIRT
 #include <asm/paravirt.h>
 #endif
+
+#include <linux/sec_debug.h>
 
 #include "sched.h"
 #include "../workqueue_internal.h"
@@ -771,6 +772,8 @@ static inline void enqueue_task(struct rq *rq, struct task_struct *p, int flags)
 		psi_enqueue(p, flags & ENQUEUE_WAKEUP);
 	}
 
+	update_cpu_active_ratio(rq, p, EMS_PART_ENQUEUE);
+
 	p->sched_class->enqueue_task(rq, p, flags);
 }
 
@@ -783,6 +786,8 @@ static inline void dequeue_task(struct rq *rq, struct task_struct *p, int flags)
 		sched_info_dequeued(rq, p);
 		psi_dequeue(p, flags & DEQUEUE_SLEEP);
 	}
+
+	update_cpu_active_ratio(rq, p, EMS_PART_DEQUEUE);
 
 	p->sched_class->dequeue_task(rq, p, flags);
 }
@@ -2236,9 +2241,11 @@ static void __sched_fork(unsigned long clone_flags, struct task_struct *p)
 #endif
 
 	INIT_LIST_HEAD(&p->se.group_node);
+#if 0
 #ifdef CONFIG_SCHED_EMS
 	rcu_assign_pointer(p->band, NULL);
 	INIT_LIST_HEAD(&p->band_members);
+#endif
 #endif
 	walt_init_new_task_load(p);
 
@@ -2249,6 +2256,10 @@ static void __sched_fork(unsigned long clone_flags, struct task_struct *p)
 #ifdef CONFIG_SCHEDSTATS
 	/* Even if schedstat is disabled, there should not be garbage */
 	memset(&p->se.statistics, 0, sizeof(p->se.statistics));
+#endif
+
+#ifdef CONFIG_CPU_FREQ_TIMES
+	cpufreq_task_times_init(p);
 #endif
 
 	RB_CLEAR_NODE(&p->dl.rb_node);
@@ -2519,8 +2530,6 @@ void wake_up_new_task(struct task_struct *p)
 
 	raw_spin_lock_irqsave(&p->pi_lock, rf.flags);
 
-	newbie_join_band(p);
-
 	walt_init_new_task_load(p);
 
 	p->state = TASK_RUNNING;
@@ -2538,6 +2547,8 @@ void wake_up_new_task(struct task_struct *p)
 	rq = __task_rq_lock(p, &rf);
 	update_rq_clock(rq);
 	post_init_entity_util_avg(&p->se);
+
+	update_cpu_active_ratio(rq, p, EMS_PART_WAKEUP_NEW);
 
 	activate_task(rq, p, ENQUEUE_NOCLOCK);
 	walt_mark_task_starting(p);
@@ -3095,6 +3106,9 @@ void scheduler_tick(void)
 
 	rq_lock(rq, &rf);
 
+	set_part_period_start(rq);
+	update_cpu_active_ratio(rq, NULL, EMS_PART_UPDATE);
+
 	walt_set_window_start(rq, &rf);
 	walt_update_task_ravg(rq->curr, rq, TASK_UPDATE,
 			walt_ktime_clock(), 0);
@@ -3113,8 +3127,6 @@ void scheduler_tick(void)
 	trigger_load_balance(rq);
 #endif
 	rq_last_tick_reset(rq);
-
-	update_band(curr, -1);
 }
 
 #ifdef CONFIG_NO_HZ_FULL
@@ -3241,7 +3253,7 @@ static noinline void __schedule_bug(struct task_struct *prev)
 	if (oops_in_progress)
 		return;
 
-	printk(KERN_ERR "BUG: scheduling while atomic: %s/%d/0x%08x\n",
+	pr_auto(ASL6, "BUG: scheduling while atomic: %s/%d/0x%08x\n",
 		prev->comm, prev->pid, preempt_count());
 
 	debug_show_held_locks(prev);
@@ -3258,6 +3270,9 @@ static noinline void __schedule_bug(struct task_struct *prev)
 		panic("scheduling while atomic\n");
 
 	dump_stack();
+#ifdef CONFIG_DEBUG_ATOMIC_SLEEP_PANIC
+	BUG();
+#endif
 	add_taint(TAINT_WARN, LOCKDEP_STILL_OK);
 }
 
@@ -3985,7 +4000,7 @@ int idle_cpu(int cpu)
 	if (rq->curr != rq->idle)
 		return 0;
 
-	if (rq->nr_running == 1)
+	if (rq->nr_running)
 		return 0;
 
 #ifdef CONFIG_SMP
@@ -5244,6 +5259,7 @@ void sched_show_task(struct task_struct *p)
 		(unsigned long)task_thread_info(p)->flags);
 
 	print_worker_info(KERN_INFO, p);
+	sec_debug_wtsk_print_info(p, false);
 	show_stack(p, NULL);
 	put_task_stack(p);
 }
@@ -6010,6 +6026,11 @@ void __init sched_init(void)
 
 		INIT_LIST_HEAD(&rq->cfs_tasks);
 
+#ifdef CONFIG_SCHED_EMS
+		INIT_LIST_HEAD(&rq->sse_cfs_tasks);
+		INIT_LIST_HEAD(&rq->uss_cfs_tasks);
+#endif
+
 		rq_attach_root(rq, &def_root_domain);
 #ifdef CONFIG_NO_HZ_COMMON
 		rq->last_load_update_tick = jiffies;
@@ -6025,8 +6046,6 @@ void __init sched_init(void)
 	}
 
 	set_load_weight(&init_task);
-
-	alloc_bands();
 
 	/*
 	 * The boot idle thread does lazy MMU switching as well:
@@ -6056,6 +6075,7 @@ void __init sched_init(void)
 	init_schedstats();
 
 	psi_init();
+	init_ems();
 
 	scheduler_running = 1;
 }
@@ -6109,7 +6129,7 @@ void ___might_sleep(const char *file, int line, int preempt_offset)
 	/* Save this before calling printk(), since that will clobber it: */
 	preempt_disable_ip = get_preempt_disable_ip(current);
 
-	printk(KERN_ERR
+	pr_auto(ASL6,
 		"BUG: sleeping function called from invalid context at %s:%d\n",
 			file, line);
 	printk(KERN_ERR
@@ -6130,6 +6150,9 @@ void ___might_sleep(const char *file, int line, int preempt_offset)
 		pr_cont("\n");
 	}
 	dump_stack();
+#ifdef CONFIG_DEBUG_ATOMIC_SLEEP_PANIC
+	BUG();
+#endif
 	add_taint(TAINT_WARN, LOCKDEP_STILL_OK);
 }
 EXPORT_SYMBOL(___might_sleep);

@@ -361,7 +361,6 @@ err:
 	return ret;
 }
 
-#ifdef CONFIG_CMA_DEBUG
 static void cma_debug_show_areas(struct cma *cma)
 {
 	unsigned long next_zero_bit, next_set_bit;
@@ -383,9 +382,6 @@ static void cma_debug_show_areas(struct cma *cma)
 	pr_cont("=> %u free of %lu total pages\n", nr_total, cma->count);
 	mutex_unlock(&cma->lock);
 }
-#else
-static inline void cma_debug_show_areas(struct cma *cma) { }
-#endif
 
 /**
  * cma_alloc() - allocate pages from contiguous area
@@ -443,7 +439,7 @@ struct page *cma_alloc(struct cma *cma, size_t count, unsigned int align,
 		pfn = cma->base_pfn + (bitmap_no << cma->order_per_bit);
 		mutex_lock(&cma_mutex);
 		ret = alloc_contig_range(pfn, pfn + count, MIGRATE_CMA,
-					 gfp_mask);
+				GFP_KERNEL | (gfp_mask & __GFP_NOWARN));
 		mutex_unlock(&cma_mutex);
 		if (ret == 0) {
 			page = pfn_to_page(pfn);

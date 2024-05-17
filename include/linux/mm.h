@@ -25,6 +25,7 @@
 #include <linux/err.h>
 #include <linux/page_ref.h>
 #include <linux/memremap.h>
+#include <linux/ratelimit.h>
 
 struct mempolicy;
 struct anon_vma;
@@ -1177,7 +1178,6 @@ static inline void clear_page_pfmemalloc(struct page *page)
 #define VM_FAULT_HWPOISON 0x0010	/* Hit poisoned small page */
 #define VM_FAULT_HWPOISON_LARGE 0x0020  /* Hit poisoned large page. Index encoded in upper bits */
 #define VM_FAULT_SIGSEGV 0x0040
-#define VM_FAULT_SWAP 0x0080
 
 #define VM_FAULT_NOPAGE	0x0100	/* ->fault installed the pte, not return page */
 #define VM_FAULT_LOCKED	0x0200	/* ->fault locked the returned page */
@@ -1504,27 +1504,19 @@ static inline unsigned long get_mm_counter(struct mm_struct *mm, int member)
 	return (unsigned long)val;
 }
 
-void mm_trace_rss_stat(int member, long count, long value);
-
 static inline void add_mm_counter(struct mm_struct *mm, int member, long value)
 {
-	long count = atomic_long_add_return(value, &mm->rss_stat.count[member]);
-
-	mm_trace_rss_stat(member, count, value);
+	atomic_long_add(value, &mm->rss_stat.count[member]);
 }
 
 static inline void inc_mm_counter(struct mm_struct *mm, int member)
 {
-	long count = atomic_long_inc_return(&mm->rss_stat.count[member]);
-
-	mm_trace_rss_stat(member, count, 1);
+	atomic_long_inc(&mm->rss_stat.count[member]);
 }
 
 static inline void dec_mm_counter(struct mm_struct *mm, int member)
 {
-	long count = atomic_long_dec_return(&mm->rss_stat.count[member]);
-
-	mm_trace_rss_stat(member, count, -1);
+	atomic_long_dec(&mm->rss_stat.count[member]);
 }
 
 /* Optimized variant when page is already known not to be PageAnon */
@@ -1933,8 +1925,11 @@ static inline void __free_reserved_page(struct page *page)
 	__free_page(page);
 }
 
+extern int late_free_memsize_page(unsigned long ip, struct page *page);
+
 static inline void free_reserved_page(struct page *page)
 {
+	late_free_memsize_page(_RET_IP_, page);
 	__free_reserved_page(page);
 	adjust_managed_page_count(page, 1);
 }
@@ -2221,10 +2216,20 @@ extern unsigned long unmapped_area_topdown(struct vm_unmapped_area_info *info);
 static inline unsigned long
 vm_unmapped_area(struct vm_unmapped_area_info *info)
 {
+	unsigned long addr;
+
 	if (info->flags & VM_UNMAPPED_AREA_TOPDOWN)
-		return unmapped_area_topdown(info);
+		addr = unmapped_area_topdown(info);
 	else
-		return unmapped_area(info);
+		addr = unmapped_area(info);
+
+	if (IS_ERR_VALUE(addr)) {
+		pr_warn_ratelimited("%s err:%ld total_vm:0x%lx flags:0x%lx len:0x%lx low:0x%lx high:0x%lx mask:0x%lx offset:0x%lx\n",
+			__func__, addr, current->mm->total_vm, info->flags,
+			info->length, info->low_limit, info->high_limit,
+			info->align_mask, info->align_offset);
+	}
+	return addr;
 }
 
 /* truncate.c */
@@ -2246,6 +2251,7 @@ void task_dirty_inc(struct task_struct *tsk);
 /* readahead.c */
 #define VM_MAX_READAHEAD	128	/* kbytes */
 #define VM_MIN_READAHEAD	16	/* kbytes (includes current page) */
+extern unsigned int mmap_readaround_limit;
 
 int force_page_cache_readahead(struct address_space *mapping, struct file *filp,
 			pgoff_t offset, unsigned long nr_to_read);
@@ -2401,7 +2407,6 @@ static inline struct page *follow_page(struct vm_area_struct *vma,
 #define FOLL_REMOTE	0x2000	/* we are working on non-current tsk/mm */
 #define FOLL_COW	0x4000	/* internal GUP flag */
 #define FOLL_ANON	0x8000	/* don't do file mappings */
-#define FOLL_CMA	0x80000	/* migrate if the page is from cma pageblock */
 
 static inline int vm_fault_to_errno(int vm_fault, int foll_flags)
 {
@@ -2637,5 +2642,37 @@ void __init setup_nr_node_ids(void);
 static inline void setup_nr_node_ids(void) {}
 #endif
 
+enum memsize_kernel_type {
+	MEMSIZE_KERNEL_KERNEL = 0,
+	MEMSIZE_KERNEL_PAGING,
+	MEMSIZE_KERNEL_LOGBUF,
+	MEMSIZE_KERNEL_PIDHASH,
+	MEMSIZE_KERNEL_VFSHASH,
+	MEMSIZE_KERNEL_MM_INIT,
+	MEMSIZE_KERNEL_OTHERS,
+	MEMSIZE_KERNEL_STOP,
+};
+#if defined(CONFIG_HAVE_MEMBLOCK)
+extern void set_memsize_reserved_name(const char *name);
+extern void unset_memsize_reserved_name(void);
+extern void set_memsize_kernel_type(enum memsize_kernel_type type);
+extern void free_memsize_reserved(phys_addr_t free_base, phys_addr_t free_size);
+extern void record_memsize_reserved(const char *name, phys_addr_t base,
+				    phys_addr_t size, bool nomap,
+				    bool reusable);
+extern void record_memsize_memory_hole(void);
+#else
+static inline void set_memsize_reserved_name(const char *name) { }
+static inline void unset_memsize_reserved_name(void) { }
+static inline void set_memsize_kernel_type(enum memsize_kernel_type type) { }
+static inline void free_memsize_reserved(phys_addr_t free_base,
+					 phys_addr_t free_size) { }
+static inline void record_memsize_reserved(const char *name, phys_addr_t base,
+				    phys_addr_t size, bool nomap,
+				    bool reusable) { }
+static inline void record_memsize_memory_hole(void) { }
+#endif
+
+extern bool need_memory_boosting(struct pglist_data *pgdat);
 #endif /* __KERNEL__ */
 #endif /* _LINUX_MM_H */

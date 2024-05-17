@@ -57,6 +57,7 @@ static void ion_buffer_add(struct ion_device *dev,
 	struct rb_node **p = &dev->buffers.rb_node;
 	struct rb_node *parent = NULL;
 	struct ion_buffer *entry;
+	struct task_struct *task;
 
 	while (*p) {
 		parent = *p;
@@ -72,6 +73,12 @@ static void ion_buffer_add(struct ion_device *dev,
 		}
 	}
 
+	task = current;
+	get_task_comm(buffer->task_comm, task->group_leader);
+	get_task_comm(buffer->thread_comm, task);
+	buffer->pid = task_pid_nr(task->group_leader);
+	buffer->tid = task_pid_nr(task);
+
 	rb_link_node(&buffer->node, parent, p);
 	rb_insert_color(&buffer->node, &dev->buffers);
 }
@@ -84,6 +91,7 @@ static struct ion_buffer *ion_buffer_create(struct ion_heap *heap,
 {
 	struct ion_buffer *buffer;
 	int ret;
+	long nr_alloc_cur, nr_alloc_peak;
 
 	buffer = kzalloc(sizeof(*buffer), GFP_KERNEL);
 	if (!buffer)
@@ -124,6 +132,11 @@ static struct ion_buffer *ion_buffer_create(struct ion_heap *heap,
 
 	ion_buffer_add(dev, buffer);
 	mutex_unlock(&dev->buffer_lock);
+	nr_alloc_cur = atomic_long_add_return(len, &heap->total_allocated);
+	nr_alloc_peak = atomic_long_read(&heap->total_allocated_peak);
+	if (nr_alloc_cur > nr_alloc_peak)
+		atomic_long_set(&heap->total_allocated_peak, nr_alloc_cur);
+
 	return buffer;
 
 err1:
@@ -145,6 +158,7 @@ void ion_buffer_destroy(struct ion_buffer *buffer)
 			     __func__);
 		buffer->heap->ops->unmap_kernel(buffer->heap, buffer);
 	}
+	atomic_long_sub(buffer->size, &buffer->heap->total_allocated);
 	buffer->heap->ops->free(buffer);
 
 	ion_event_end(ION_EVENT_TYPE_FREE, buffer);
@@ -362,7 +376,6 @@ static void ion_dma_buf_kunmap(struct dma_buf *dmabuf, unsigned long offset,
 		ion_buffer_kmap_put(buffer);
 		mutex_unlock(&buffer->lock);
 	}
-
 }
 
 static void *ion_dma_buf_vmap(struct dma_buf *dmabuf)
@@ -488,7 +501,10 @@ struct dma_buf *__ion_alloc(size_t len, unsigned int heap_id_mask,
 		/* if the caller didn't specify this heap id */
 		if (!((1 << heap->id) & heap_id_mask))
 			continue;
+		tracing_mark_begin("%s(%s, %zu, 0x%x, 0x%x)", "ion_alloc",
+				   heap->name, len, heap_id_mask, flags);
 		buffer = ion_buffer_create(heap, dev, len, flags);
+		tracing_mark_end();
 		if (!IS_ERR(buffer))
 			break;
 	}

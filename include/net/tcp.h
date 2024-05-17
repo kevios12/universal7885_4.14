@@ -1611,8 +1611,6 @@ static inline void tcp_init_send_head(struct sock *sk)
 	sk->sk_send_head = NULL;
 }
 
-static inline void tcp_init_send_head(struct sock *sk);
-
 /* write queue abstraction */
 static inline void tcp_write_queue_purge(struct sock *sk)
 {
@@ -1621,7 +1619,6 @@ static inline void tcp_write_queue_purge(struct sock *sk)
 	tcp_chrono_stop(sk, TCP_CHRONO_BUSY);
 	while ((skb = __skb_dequeue(&sk->sk_write_queue)) != NULL)
 		sk_wmem_free_skb(sk, skb);
-	tcp_init_send_head(sk);
 	sk_mem_reclaim(sk);
 	tcp_clear_all_retrans_hints(tcp_sk(sk));
 	tcp_init_send_head(sk);
@@ -1951,8 +1948,15 @@ static inline s64 tcp_rto_delta_us(const struct sock *sk)
 {
 	const struct sk_buff *skb = tcp_write_queue_head(sk);
 	u32 rto = inet_csk(sk)->icsk_rto;
-	u64 rto_time_stamp_us = skb->skb_mstamp + jiffies_to_usecs(rto);
+	u64 rto_time_stamp_us;
 
+	if (unlikely(!skb)) {
+		pr_warn_once("drop null skb rto");
+		TCP_INC_STATS(sock_net(sk), TCP_MIB_RTONULLSKB);
+		return 0;
+	}
+
+	rto_time_stamp_us = skb->skb_mstamp + jiffies_to_usecs(rto);
 	return rto_time_stamp_us - tcp_sk(sk)->tcp_mstamp;
 }
 

@@ -134,13 +134,9 @@ out_rcu_unlock:
 }
 EXPORT_SYMBOL(ip6_expire_frag_queue);
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 15, 0)
-static void ip6_frag_expire(unsigned long t)
-#else
 static void ip6_frag_expire(struct timer_list *t)
-#endif
 {
-	struct inet_frag_queue *frag = from_timer(frag, (struct timer_list *)t, timer);
+	struct inet_frag_queue *frag = from_timer(frag, t, timer);
 	struct frag_queue *fq;
 	struct net *net;
 
@@ -532,10 +528,6 @@ static int ipv6_frag_rcv(struct sk_buff *skb)
 		IP6CB(skb)->flags |= IP6SKB_FRAGMENTED;
 		return 1;
 	}
-
-	if (skb->len - skb_network_offset(skb) < IPV6_MIN_MTU &&
-	    fhdr->frag_off & htons(IP6_MF))
-		goto fail_hdr;
 
 	iif = skb->dev ? skb->dev->ifindex : 0;
 	fq = fq_find(net, fhdr->identification, hdr, iif);

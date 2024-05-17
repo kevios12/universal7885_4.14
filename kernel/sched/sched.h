@@ -32,6 +32,8 @@
 #include <linux/irq_work.h>
 #include <linux/tick.h>
 #include <linux/slab.h>
+#include <linux/cpufreq.h>
+#include <linux/ems.h>
 
 #ifdef CONFIG_PARAVIRT
 #include <asm/paravirt.h>
@@ -497,6 +499,7 @@ struct cfs_rq {
 	 * CFS load tracking
 	 */
 	struct sched_avg avg;
+	struct multi_load ml;
 	u64 runnable_load_sum;
 	unsigned long runnable_load_avg;
 #ifdef CONFIG_FAIR_GROUP_SCHED
@@ -504,6 +507,14 @@ struct cfs_rq {
 	unsigned long propagate_avg;
 #endif
 	atomic_long_t removed_load_avg, removed_util_avg;
+
+	struct {
+		raw_spinlock_t	lock ____cacheline_aligned;
+		int		nr;
+		unsigned long	util_avg;
+		unsigned long	util_avg_s;
+	} ml_removed;
+
 #ifndef CONFIG_64BIT
 	u64 load_last_update_time_copy;
 #endif
@@ -699,6 +710,9 @@ struct root_domain {
 	 */
 	int overload;
 
+	/* For backporting from 4.19 */
+	int overutilized;
+
 	/*
 	 * The bit corresponding to a CPU gets set here if such CPU has more
 	 * than one runnable -deadline task (as it is below for RT tasks).
@@ -860,6 +874,8 @@ struct rq {
 	u64 cum_window_demand;
 #endif /* CONFIG_SCHED_WALT */
 
+	struct part pa;
+
 #ifdef CONFIG_SCHED_EMS
 	bool ontime_migrating;
 #endif
@@ -913,6 +929,9 @@ struct rq {
 	struct cpuidle_state *idle_state;
 	int idle_state_idx;
 #endif
+
+	struct list_head uss_cfs_tasks;
+	struct list_head sse_cfs_tasks;
 };
 
 static inline int cpu_of(struct rq *rq)
@@ -1931,9 +1950,7 @@ extern unsigned int sysctl_sched_use_walt_cpu_util;
 extern unsigned int walt_ravg_window;
 extern bool walt_disabled;
 
-extern unsigned long cpu_util(int cpu);
-
-#endif
+#endif /* CONFIG_SMP */
 
 static inline void sched_rt_avg_update(struct rq *rq, u64 rt_delta)
 {
@@ -2358,6 +2375,13 @@ walt_task_in_cum_window_demand(struct rq *rq, struct task_struct *p)
 }
 
 #endif /* CONFIG_SCHED_WALT */
+
+#ifdef CONFIG_SMP
+static inline unsigned long cpu_util_rt(struct rq *rq)
+{
+	return READ_ONCE(rq->rt.avg.util_avg);
+}
+#endif
 
 #ifdef arch_scale_freq_capacity
 #ifndef arch_scale_freq_invariant

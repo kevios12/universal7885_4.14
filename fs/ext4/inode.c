@@ -401,6 +401,9 @@ static int __check_block_validity(struct inode *inode, const char *func,
 {
 	if (!ext4_data_block_valid(EXT4_SB(inode->i_sb), map->m_pblk,
 				   map->m_len)) {
+		printk(KERN_ERR "printing inode..\n");
+		print_block_data(inode->i_sb, 0, (unsigned char *)inode, 0,
+				EXT4_INODE_SIZE(inode->i_sb));
 		ext4_error_inode(inode, func, line, map->m_pblk,
 				 "lblock %lu mapped to illegal pblock %llu "
 				 "(length %d)", (unsigned long) map->m_lblk,
@@ -1215,21 +1218,18 @@ static int ext4_block_write_begin(struct page *page, loff_t pos, unsigned len,
 		if (!buffer_uptodate(bh) && !buffer_delay(bh) &&
 		    !buffer_unwritten(bh) &&
 		    (block_start < from || block_end > to)) {
-			int bi_opf = 0;
+		    int bi_opf = 0;
 
-			decrypt = ext4_encrypted_inode(inode) &&
-				S_ISREG(inode->i_mode);
-			bi_opf = decrypt ? REQ_NOENCRYPT : 0;
-			if (decrypt && fscrypt_has_encryption_key(inode)) {
-				bh->b_private = fscrypt_get_diskcipher(inode);
-				if (bh->b_private) {
-					bi_opf |= REQ_CRYPT;
-					decrypt = 0;
+			if (S_ISREG(inode->i_mode) && ext4_encrypted_inode(inode)
+					&& fscrypt_has_encryption_key(inode)) {
+					bh->b_private = fscrypt_get_diskcipher(inode);
+					if (bh->b_private)
+						bi_opf = REQ_CRYPT;
 				}
-			}
 			ll_rw_block(REQ_OP_READ, bi_opf, 1, &bh);
-			crypto_diskcipher_debug(FS_BLOCK_WRITE, bi_opf);
 			*wait_bh++ = bh;
+			decrypt = ext4_encrypted_inode(inode) &&
+				S_ISREG(inode->i_mode) && !bh->b_private;
 		}
 	}
 	/*
@@ -2651,23 +2651,13 @@ static int mpage_prepare_extent_to_map(struct mpage_da_data *mpd)
 	mpd->map.m_len = 0;
 	mpd->next_page = index;
 	while (index <= end) {
-		nr_pages = pagevec_lookup_tag(&pvec, mapping, &index, tag,
-			      min(end - index, (pgoff_t)PAGEVEC_SIZE-1) + 1);
+		nr_pages = pagevec_lookup_range_tag(&pvec, mapping, &index, end,
+				tag);
 		if (nr_pages == 0)
 			goto out;
 
 		for (i = 0; i < nr_pages; i++) {
 			struct page *page = pvec.pages[i];
-
-			/*
-			 * At this point, the page may be truncated or
-			 * invalidated (changing page->mapping to NULL), or
-			 * even swizzled back from swapper_space to tmpfs file
-			 * mapping. However, page->index will not change
-			 * because we have a reference on the page.
-			 */
-			if (page->index > end)
-				goto out;
 
 			/*
 			 * Accumulated enough dirty pages? This doesn't apply
@@ -3999,7 +3989,6 @@ static int __ext4_block_zero_page_range(handle_t *handle,
 	struct inode *inode = mapping->host;
 	struct buffer_head *bh;
 	struct page *page;
-	bool decrypt;
 	int err = 0;
 
 	page = find_or_create_page(mapping, from >> PAGE_SHIFT,
@@ -4042,22 +4031,20 @@ static int __ext4_block_zero_page_range(handle_t *handle,
 
 	if (!buffer_uptodate(bh)) {
 		err = -EIO;
-		decrypt = S_ISREG(inode->i_mode) &&
-		    ext4_encrypted_inode(inode);
-		if (decrypt && fscrypt_has_encryption_key(inode))
+		if (S_ISREG(inode->i_mode) && ext4_encrypted_inode(inode)
+				&& fscrypt_has_encryption_key(inode))
 			bh->b_private = fscrypt_get_diskcipher(inode);
-		else
-			bh->b_private = NULL;
 		if (bh->b_private)
-			ll_rw_block(REQ_OP_READ, REQ_CRYPT | REQ_NOENCRYPT, 1, &bh);
+			ll_rw_block(REQ_OP_READ, REQ_CRYPT, 1, &bh);
 		else
-			ll_rw_block(REQ_OP_READ, (decrypt ? REQ_NOENCRYPT : 0), 1, &bh);
+			ll_rw_block(REQ_OP_READ, 0, 1, &bh);
 
 		wait_on_buffer(bh);
 		/* Uhhuh. Read error. Complain and punt. */
 		if (!buffer_uptodate(bh))
 			goto unlock;
-		if (decrypt) {
+		if (S_ISREG(inode->i_mode) &&
+		    ext4_encrypted_inode(inode)) {
 			/* We expect the key to be set. */
 			BUG_ON(!fscrypt_has_encryption_key(inode));
 			BUG_ON(blocksize != PAGE_SIZE);
@@ -4774,6 +4761,7 @@ struct inode *ext4_iget(struct super_block *sb, unsigned long ino)
 	raw_inode = ext4_raw_inode(&iloc);
 
 	if ((ino == EXT4_ROOT_INO) && (raw_inode->i_links_count == 0)) {
+		print_iloc_info(sb, iloc);
 		EXT4_ERROR_INODE(inode, "root inode unallocated");
 		ret = -EFSCORRUPTED;
 		goto bad_inode;
@@ -4784,6 +4772,7 @@ struct inode *ext4_iget(struct super_block *sb, unsigned long ino)
 		if (EXT4_GOOD_OLD_INODE_SIZE + ei->i_extra_isize >
 			EXT4_INODE_SIZE(inode->i_sb) ||
 		    (ei->i_extra_isize & 3)) {
+			print_iloc_info(sb, iloc);
 			EXT4_ERROR_INODE(inode,
 					 "bad extra_isize %u (inode size %u)",
 					 ei->i_extra_isize,
@@ -4807,6 +4796,7 @@ struct inode *ext4_iget(struct super_block *sb, unsigned long ino)
 	}
 
 	if (!ext4_inode_csum_verify(inode, raw_inode, ei)) {
+		print_iloc_info(sb, iloc);
 		EXT4_ERROR_INODE(inode, "checksum invalid");
 		ret = -EFSBADCRC;
 		goto bad_inode;
@@ -4846,6 +4836,7 @@ struct inode *ext4_iget(struct super_block *sb, unsigned long ino)
 		    ino != EXT4_BOOT_LOADER_INO) {
 			/* this inode is deleted */
 			ret = -ESTALE;
+			print_iloc_info(sb, iloc);
 			goto bad_inode;
 		}
 		/* The only unlinked inodes we let through here have
@@ -4863,6 +4854,7 @@ struct inode *ext4_iget(struct super_block *sb, unsigned long ino)
 			((__u64)le16_to_cpu(raw_inode->i_file_acl_high)) << 32;
 	inode->i_size = ext4_isize(sb, raw_inode);
 	if ((size = i_size_read(inode)) < 0) {
+		print_iloc_info(sb, iloc);
 		EXT4_ERROR_INODE(inode, "bad i_size value: %lld", size);
 		ret = -EFSCORRUPTED;
 		goto bad_inode;
@@ -4915,8 +4907,10 @@ struct inode *ext4_iget(struct super_block *sb, unsigned long ino)
 					    EXT4_GOOD_OLD_INODE_SIZE;
 		} else {
 			ret = ext4_iget_extra_inode(inode, raw_inode, ei);
-			if (ret)
+			if (ret) {
+				print_iloc_info(sb, iloc);
 				goto bad_inode;
+			}
 		}
 	}
 
@@ -4937,6 +4931,7 @@ struct inode *ext4_iget(struct super_block *sb, unsigned long ino)
 	ret = 0;
 	if (ei->i_file_acl &&
 	    !ext4_data_block_valid(EXT4_SB(sb), ei->i_file_acl, 1)) {
+		print_iloc_info(sb, iloc);
 		EXT4_ERROR_INODE(inode, "bad extended attribute block %llu",
 				 ei->i_file_acl);
 		ret = -EFSCORRUPTED;
@@ -4955,8 +4950,10 @@ struct inode *ext4_iget(struct super_block *sb, unsigned long ino)
 			ret = ext4_ind_check_inode(inode);
 		}
 	}
-	if (ret)
+	if (ret) {
+		print_iloc_info(sb, iloc);
 		goto bad_inode;
+	}
 
 	if (S_ISREG(inode->i_mode)) {
 		inode->i_op = &ext4_file_inode_operations;
@@ -4992,6 +4989,7 @@ struct inode *ext4_iget(struct super_block *sb, unsigned long ino)
 		make_bad_inode(inode);
 	} else {
 		ret = -EFSCORRUPTED;
+		print_iloc_info(sb, iloc);
 		EXT4_ERROR_INODE(inode, "bogus i_mode (%o)", inode->i_mode);
 		goto bad_inode;
 	}
@@ -5074,7 +5072,7 @@ static int other_inode_match(struct inode * inode, unsigned long ino,
 	    (inode->i_state & I_DIRTY_TIME)) {
 		struct ext4_inode_info	*ei = EXT4_I(inode);
 
-		inode->i_state &= ~(I_DIRTY_TIME | I_DIRTY_TIME_EXPIRED);
+		inode->i_state &= ~I_DIRTY_TIME;
 		spin_unlock(&inode->i_lock);
 
 		spin_lock(&ei->i_raw_lock);

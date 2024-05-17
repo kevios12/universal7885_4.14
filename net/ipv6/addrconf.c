@@ -186,7 +186,7 @@ static void addrconf_dad_start(struct inet6_ifaddr *ifp);
 static void addrconf_dad_work(struct work_struct *w);
 static void addrconf_dad_completed(struct inet6_ifaddr *ifp, bool bump_id,
 				   bool send_na);
-static void addrconf_dad_run(struct inet6_dev *idev);
+static void addrconf_dad_run(struct inet6_dev *idev, bool restart);
 static void addrconf_rs_timer(unsigned long data);
 static void __ipv6_ifa_notify(int event, struct inet6_ifaddr *ifa);
 static void ipv6_ifa_notify(int event, struct inet6_ifaddr *ifa);
@@ -2218,6 +2218,14 @@ static int ipv6_generate_eui64(u8 *eui, struct net_device *dev)
 	case ARPHRD_TUNNEL6:
 	case ARPHRD_IP6GRE:
 		return addrconf_ifid_ip6tnl(eui, dev);
+	case ARPHRD_PPP: {
+		struct in6_addr lladdr;
+		if (ipv6_get_lladdr(dev, &lladdr, IFA_F_TENTATIVE))
+			get_random_bytes(eui, 8);
+		else
+			memcpy(eui, lladdr.s6_addr + 8, 8);
+		return 0;
+	}
 	}
 	return -1;
 }
@@ -3248,7 +3256,8 @@ static void addrconf_dev_config(struct net_device *dev)
 	    (dev->type != ARPHRD_IP6GRE) &&
 	    (dev->type != ARPHRD_IPGRE) &&
 	    (dev->type != ARPHRD_TUNNEL) &&
-	    (dev->type != ARPHRD_NONE)) {
+	    (dev->type != ARPHRD_NONE) &&
+	    (dev->type != ARPHRD_PPP)) {
 		/* Alas, we support only Ethernet autoconfiguration. */
 		return;
 	}
@@ -3381,6 +3390,7 @@ static int addrconf_notify(struct notifier_block *this, unsigned long event,
 {
 	struct net_device *dev = netdev_notifier_info_to_dev(ptr);
 	struct netdev_notifier_changeupper_info *info;
+	struct netdev_notifier_change_info *change_info;
 	struct inet6_dev *idev = __in6_dev_get(dev);
 	struct net *net = dev_net(dev);
 	int run_pending = 0;
@@ -3453,7 +3463,7 @@ static int addrconf_notify(struct notifier_block *this, unsigned long event,
 				break;
 			}
 
-			if (idev) {
+			if (!IS_ERR_OR_NULL(idev)) {
 				if (idev->if_flags & IF_READY) {
 					/* device is already configured -
 					 * but resend MLD reports, we might
@@ -3461,6 +3471,9 @@ static int addrconf_notify(struct notifier_block *this, unsigned long event,
 					 * multicast snooping switches
 					 */
 					ipv6_mc_up(idev);
+					change_info = ptr;
+					if (change_info->flags_changed & IFF_NOARP)
+						addrconf_dad_run(idev, true);
 					break;
 				}
 				idev->if_flags |= IF_READY;
@@ -3494,7 +3507,7 @@ static int addrconf_notify(struct notifier_block *this, unsigned long event,
 
 		if (!IS_ERR_OR_NULL(idev)) {
 			if (run_pending)
-				addrconf_dad_run(idev);
+				addrconf_dad_run(idev, false);
 
 			/*
 			 * If the MTU changed during the interface down,
@@ -4119,16 +4132,19 @@ static void addrconf_dad_completed(struct inet6_ifaddr *ifp, bool bump_id,
 		addrconf_verify_rtnl();
 }
 
-static void addrconf_dad_run(struct inet6_dev *idev)
+static void addrconf_dad_run(struct inet6_dev *idev, bool restart)
 {
 	struct inet6_ifaddr *ifp;
 
 	read_lock_bh(&idev->lock);
 	list_for_each_entry(ifp, &idev->addr_list, if_list) {
 		spin_lock(&ifp->lock);
-		if (ifp->flags & IFA_F_TENTATIVE &&
-		    ifp->state == INET6_IFADDR_STATE_DAD)
+		if ((ifp->flags & IFA_F_TENTATIVE &&
+		     ifp->state == INET6_IFADDR_STATE_DAD) || restart) {
+			if (restart)
+				ifp->state = INET6_IFADDR_STATE_PREDAD;
 			addrconf_dad_kick(ifp);
+		}
 		spin_unlock(&ifp->lock);
 	}
 	read_unlock_bh(&idev->lock);

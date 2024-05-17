@@ -14,6 +14,11 @@ fw-external-y := $(subst $(quote),,$(CONFIG_EXTRA_FIRMWARE))
 
 fw-external-$(CONFIG_EXYNOS9610_ACPM) += exynos9610_acpm_fvp.fw
 fw-external-$(CONFIG_EXYNOS9610_ACPM) += exynos9610_acpm_tmu.fw
+fw-external-$(CONFIG_EXYNOS7885_ACPM) += exynos7885_acpm_fvp.fw
+fw-shipped-$(CONFIG_FIVE_TEE_DRIVER) += five/ffffffff000000000000000000000072.tlbin
+
+# Touchscreen Firmware
+fw-external-$(CONFIG_TOUCHSCREEN_HIMAX_INCELL) += tsp_himax/hx83102d_a20e.bin tsp_himax/hx83102d_a10eu.bin
 
 quiet_cmd_ihex  = IHEX    $@
       cmd_ihex  = $(OBJCOPY) -Iihex -Obinary $< $@

@@ -71,8 +71,6 @@
 #include <linux/dax.h>
 #include <linux/oom.h>
 
-#include <trace/events/kmem.h>
-
 #include <asm/io.h>
 #include <asm/mmu_context.h>
 #include <asm/pgalloc.h>
@@ -80,6 +78,10 @@
 #include <asm/tlb.h>
 #include <asm/tlbflush.h>
 #include <asm/pgtable.h>
+
+#ifdef CONFIG_PAGE_BOOST_RECORDING
+#include <linux/io_record.h>
+#endif
 
 #include "internal.h"
 
@@ -141,21 +143,6 @@ static int __init init_zero_pfn(void)
 }
 core_initcall(init_zero_pfn);
 
-/*
- * This threshold is the boundary in the value space, that the counter has to
- * advance before we trace it. Should be a power of 2. It is to reduce unwanted
- * trace overhead. The counter is number of pages.
- */
-#define TRACE_MM_COUNTER_THRESHOLD 128
-
-void mm_trace_rss_stat(int member, long count, long value)
-{
-	long thresh_mask = ~(TRACE_MM_COUNTER_THRESHOLD - 1);
-
-	/* Threshold roll-over, trace it */
-	if ((count & thresh_mask) != ((count - value) & thresh_mask))
-		trace_rss_stat(member, count);
-}
 
 #if defined(SPLIT_RSS_COUNTING)
 
@@ -1326,6 +1313,9 @@ again:
 		if (pte_none(ptent))
 			continue;
 
+		if (need_resched())
+			break;
+
 		if (pte_present(ptent)) {
 			struct page *page;
 
@@ -1424,8 +1414,11 @@ again:
 	if (force_flush) {
 		force_flush = 0;
 		tlb_flush_mmu_free(tlb);
-		if (addr != end)
-			goto again;
+	}
+
+	if (addr != end) {
+		cond_resched();
+		goto again;
 	}
 
 	return addr;
@@ -3069,7 +3062,7 @@ int do_swap_page(struct vm_fault *vmf)
 unlock:
 	pte_unmap_unlock(vmf->pte, vmf->ptl);
 out:
-	return ret | VM_FAULT_SWAP;
+	return ret;
 out_nomap:
 	mem_cgroup_cancel_charge(page, memcg, false);
 	pte_unmap_unlock(vmf->pte, vmf->ptl);
@@ -3081,7 +3074,7 @@ out_release:
 		unlock_page(swapcache);
 		put_page(swapcache);
 	}
-	return ret | VM_FAULT_SWAP;
+	return ret;
 }
 
 /*
@@ -3505,9 +3498,13 @@ int finish_fault(struct vm_fault *vmf)
 		pte_unmap_unlock(vmf->pte, vmf->ptl);
 	return ret;
 }
-
+#ifdef CONFIG_FAULT_AROUND_4KB
+static unsigned long fault_around_bytes __read_mostly =
+	rounddown_pow_of_two(4096);
+#else
 static unsigned long fault_around_bytes __read_mostly =
 	rounddown_pow_of_two(65536);
+#endif
 
 #ifdef CONFIG_DEBUG_FS
 static int fault_around_bytes_get(void *data, u64 *val)
@@ -3639,6 +3636,10 @@ static int do_read_fault(struct vm_fault *vmf)
 		ret = do_fault_around(vmf);
 		if (ret)
 			return ret;
+#ifdef CONFIG_PAGE_BOOST_RECORDING
+	} else if (vma->vm_ops->map_pages && fault_around_bytes >> PAGE_SHIFT == 1) {
+		record_io_info(vma->vm_file, vmf->pgoff, 1);
+#endif
 	}
 
 	ret = __do_fault(vmf);

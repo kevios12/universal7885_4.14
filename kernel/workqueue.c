@@ -49,6 +49,7 @@
 #include <linux/moduleparam.h>
 #include <linux/uaccess.h>
 #include <linux/nmi.h>
+#include <linux/sec_debug.h>
 #include <linux/debug-snapshot.h>
 
 #include "workqueue_internal.h"
@@ -2908,7 +2909,9 @@ bool flush_work(struct work_struct *work)
 	lock_map_release(&work->lockdep_map);
 
 	if (start_flush_work(work, &barr)) {
+		sec_debug_wtsk_set_data(DTYPE_WORK, work);
 		wait_for_completion(&barr.done);
+		sec_debug_wtsk_clear_data();
 		destroy_work_on_stack(&barr.work);
 		return true;
 	} else {
@@ -5503,8 +5506,12 @@ static void wq_watchdog_timer_fn(unsigned long data)
 
 	rcu_read_unlock();
 
-	if (lockup_detected)
+	if (lockup_detected) {
 		show_workqueue_state();
+#ifdef CONFIG_SEC_DEBUG_WORKQUEUE_LOCKUP_PANIC
+		BUG();
+#endif
+	}
 
 	wq_watchdog_reset_touched();
 	mod_timer(&wq_watchdog_timer, jiffies + thresh);

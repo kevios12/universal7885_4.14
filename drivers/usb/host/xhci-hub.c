@@ -1176,6 +1176,10 @@ int xhci_hub_control(struct usb_hcd *hcd, u16 typeReq, u16 wValue,
 			temp = readl(port_array[wIndex]);
 			bus_state->suspended_ports |= 1 << wIndex;
 
+			/* WA for Lhotse U3 Suspend */
+			if (xhci_hub_check_speed(hcd))
+				phy_ilbk(xhci->main_hcd->phy);
+
 			break;
 		case USB_PORT_FEAT_LINK_STATE:
 			temp = readl(port_array[wIndex]);
@@ -1487,8 +1491,6 @@ int xhci_hub_check_speed(struct usb_hcd *hcd)
 	for (i = 0; i < MAX_HC_SLOTS; i++) {
 		if (!xhci->devs[i])
 			continue;
-		if (!xhci->devs[i]->udev)
-			continue;
 		speed = xhci->devs[i]->udev->speed;
 		if (speed >= USB_SPEED_SUPER) {
 			return 1;
@@ -1518,9 +1520,9 @@ int xhci_bus_suspend(struct usb_hcd *hcd)
 	__le32 __iomem **port_array;
 	struct xhci_bus_state *bus_state;
 	unsigned long flags;
-	int is_port_connect = 0;
 	u32 portsc_buf[USB_MAXCHILDREN];
 	bool wake_enabled;
+	int is_port_connect = 0;
 
 	max_ports = xhci_get_ports(hcd, &port_array);
 	bus_state = &xhci->bus_state[hcd_index(hcd)];
@@ -1612,8 +1614,8 @@ int xhci_bus_suspend(struct usb_hcd *hcd)
 		writel(portsc_buf[port_index], port_array[port_index]);
 	}
 
-	xhci_info(xhci, "%s 'HC_STATE_SUSPENDED' portcon: %d primary_hcd: %d\n",
-		__func__, is_port_connect, usb_hcd_is_primary_hcd(hcd));
+	xhci_info(xhci, "%s 'HC_STATE_SUSPENDED' portcon: %d main_hcd: %d\n",
+		__func__, is_port_connect, (hcd == xhci->main_hcd));
 	hcd->state = HC_STATE_SUSPENDED;
 	bus_state->next_statechange = jiffies + msecs_to_jiffies(10);
 
@@ -1663,7 +1665,7 @@ int xhci_bus_resume(struct usb_hcd *hcd)
 	u32 next_state;
 	u32 temp, portsc;
 
-	if (usb_hcd_is_primary_hcd(hcd)) {
+	if (hcd == xhci->main_hcd) {
 		xhci_info(xhci, "[%s] phy vendor set \n",__func__);
 		phy_vendor_set(xhci->main_hcd->phy, 1, 1);
 	}
