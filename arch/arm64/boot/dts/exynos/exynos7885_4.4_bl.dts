@@ -2277,9 +2277,9 @@
 		clocks = <&clock GATE_SPI1>, <&clock SPI_1>;
 		clock-names = "spi", "spi_busclk0";
 
-	/* pinctrl was removed, because specific module need to control 
-	 * spi-pins directly by itself. If you want to use it, please 
-	 * make spi module for yours, and define pinctrl for it. 
+	/* pinctrl was removed, because specific module need to control
+	 * spi-pins directly by itself. If you want to use it, please
+	 * make spi module for yours, and define pinctrl for it.
 	 */
 	 // Not removed in 4.14
 

@@ -13,7 +13,7 @@
 #include "exynos7885_4.4_bl.dts"
 #include "display-lcd_jackpotlte_common.dtsi"
 #include "modem-s327ap-sipc-pdata.dtsi"
-//#include "battery_data_jackpotlte_common.dtsi"
+#include "battery_data_jackpotlte_common.dtsi"
 //#include "exynos7885-jackpotlte_motor.dtsi"
 #include "exynos7885-mali.dtsi"
 
@@ -71,7 +71,7 @@
 			};
 		};
 	};
-	
+
 	secgpio_dvs {
 		compatible = "samsung,exynos7885-secgpio-dvs";
 		status = "okay";

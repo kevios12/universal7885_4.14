@@ -113,7 +113,7 @@
 			compatible = "exynos,btabox_rmem";
 			size = <0x400000>;
 		};
-        
+
 		crypto {
 			compatible = "exynos9820-ion";
 			size = <0x2000000>;
