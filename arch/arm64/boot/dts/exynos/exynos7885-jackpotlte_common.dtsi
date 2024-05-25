@@ -1050,17 +1050,15 @@ or "hsi2c0_hsi2c1" or "uart_hsi2c1"
 };
 
 &i2c_1 {
-	i2c@13840000{
+	status = "okay";
+	s2mu004@3D {
 		status = "okay";
-		s2mu004@3D {
-			status = "okay";
-			compatible = "samsung,s2mu004mfd";
-			reg = <0x3D>;
-			pinctrl-names = "default";
-			pinctrl-0 = <&if_pmic_irq>;
-			s2mu004,irq-gpio = <&gpa2 2 1>;
-			s2mu004,wakeup;
-		};
+		compatible = "samsung,s2mu004mfd";
+		reg = <0x3D>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&if_pmic_irq>;
+		s2mu004,irq-gpio = <&gpa2 2 1>;
+		s2mu004,wakeup;
 	};
 };
 
